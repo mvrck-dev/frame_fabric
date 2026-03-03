@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.env
+
+# Models
+models/segmentation/*.pth
+
+# OS
+.DS_Store
+
+# Node
+node_modules/
+dist/
+build/
+.next/
+out/
+.vercel
