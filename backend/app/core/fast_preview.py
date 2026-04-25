@@ -47,6 +47,17 @@ class FastPreviewPipeline:
             except Exception:
                 pass
                 
+            try:
+                self.pipe.load_ip_adapter(
+                    "h94/IP-Adapter",
+                    subfolder="models",
+                    weight_name="ip-adapter_sd15.bin"
+                )
+                self.pipe.set_ip_adapter_scale(0.7)
+                print("[Fast Preview] IP-Adapter loaded successfully")
+            except Exception as e:
+                print(f"[Fast Preview] Continuing without IP-adapter (Missing): {e}")
+
             print(f"[Fast Preview] Ready in {time.time() - start:.2f}s")
             
         except Exception as e:
@@ -79,14 +90,24 @@ class FastPreviewPipeline:
         prompt = f"a seamlessly integrated high quality {product_name}, modern interior design, proper placement, sharp lighting, 4k"
         
         try:
-            result_small = self.pipe(
-                prompt=prompt,
-                image=scene_small,
-                mask_image=mask_small,
-                num_inference_steps=12,
-                guidance_scale=6.5, # Standard guidance
-                strength=1.0, # Complete structural recreation!
-            ).images[0]
+            ip_image = product_image.resize((256, 256))
+        except Exception:
+            ip_image = None
+            
+        gen_kwargs = {
+            "prompt": prompt,
+            "image": scene_small,
+            "mask_image": mask_small,
+            "num_inference_steps": 12,
+            "guidance_scale": 6.5,
+            "strength": 1.0,
+        }
+        
+        if ip_image is not None and getattr(self.pipe, "set_ip_adapter_scale", None):
+            gen_kwargs["ip_adapter_image"] = ip_image
+        
+        try:
+            result_small = self.pipe(**gen_kwargs).images[0]
             
             # Upscale back to original size
             result_full = result_small.resize(original_size, Image.Resampling.LANCZOS)
@@ -115,6 +136,51 @@ class FastPreviewPipeline:
             import traceback
             traceback.print_exc()
             return scene_image
+
+    def generate_t2i(self, prompt: str, steps: int = 15, seed: int = 42, num_samples: int = 1) -> list[Image.Image]:
+        """
+        Generate rapid fabric swatches using SD 1.5. 
+        Much faster than SDXL for simple texture previews.
+        """
+        self._ensure_loaded()
+        if self.pipe is None:
+            return [Image.new("RGB", (512, 512), (128, 128, 128))] * num_samples
+
+        # SD 1.5 T2I simulation via inpaint (black image + full mask)
+        dummy_image = Image.new("RGB", (512, 512), (0, 0, 0))
+        dummy_mask = Image.new("L", (512, 512), 255)
+        
+        # Disable IP-Adapter for pure T2I fabric generation
+        _has_ip_adapter = (
+            hasattr(self.pipe, "image_encoder") and self.pipe.image_encoder is not None
+        )
+        if _has_ip_adapter and getattr(self.pipe, "set_ip_adapter_scale", None):
+            self.pipe.set_ip_adapter_scale(0.0)
+
+        gen_kwargs = {
+            "prompt": prompt,
+            "image": dummy_image,
+            "mask_image": dummy_mask,
+            "num_inference_steps": steps,
+            "guidance_scale": 7.5,
+            "strength": 1.0,
+            "num_images_per_prompt": num_samples,
+            "generator": torch.Generator(device=self.device).manual_seed(seed),
+        }
+
+        # CRITICAL FIX: If IP-Adapter is loaded, diffusers REQUIRES an image even if scale is 0.
+        # Failing to provide it causes added_cond_kwargs to be None, triggering a crash.
+        if hasattr(self.pipe, "image_encoder") and self.pipe.image_encoder is not None:
+            gen_kwargs["ip_adapter_image"] = dummy_image
+
+        print(f"[Fast Preview] Generating rapid swatch: {prompt[:40]}...")
+        result = self.pipe(**gen_kwargs).images
+        
+        # Re-enable IP-Adapter for future preview calls
+        if _has_ip_adapter and getattr(self.pipe, "set_ip_adapter_scale", None):
+            self.pipe.set_ip_adapter_scale(0.7)
+        
+        return result
 
 # Global singleton
 _fast_preview_engine = None

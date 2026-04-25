@@ -24,27 +24,18 @@ _CLASS_TO_CATEGORY = {
     "bed": "beds",
     "bedsheet": "beds",
     "mattress": "beds",
-    "towel": "bathroom_shelves",
     "wardrobe": "wardrobes",
     "cabinet": "cabinets",
     "bookcase": "bookcases",
     "dresser": "dressers",
-    "lamp": "ceiling_lamps",
+    "chest of drawers": "dressers",
+    "ceiling lamp": "ceiling_lamps",
+    "pendant light": "ceiling_lamps",
+    "chandelier": "ceiling_lamps",
+    "floor lamp": "floor_lamps",
     "tv": "tv_units",
-    # Fallbacks for other generic interiors:
-    "pillow": "sofas",
-    "pillowcase": "beds",
-    "cushion": "armchairs",
-    "rug": "sofas", # IKEA dataset doesn't have an explicit rugs category in the sample
-    "carpet": "sofas",
-    "blanket": "beds",
-    "throw": "sofas",
-    "duvet": "beds",
-    "tapestry": "wardrobes",
-    "wall": "bookcases",
-    "floor": "cabinets",
-    "window": "ceiling_lamps",
-    "curtain": "wardrobes",
+    "desk": "desks",
+    "shelf": "wall_shelves",
 }
 
 
@@ -61,10 +52,28 @@ async def get_inventory_for_class(class_label: str, request: Request):
     """
     Return inventory items matching a CLIP class label.
     """
-    category = _CLASS_TO_CATEGORY.get(class_label.lower())
+    class_key = class_label.lower()
+    
+    # Simple logic to handle refined labels (e.g., "ceiling surface" -> "ceiling")
+    # or just use direct mapping.
+    category = _CLASS_TO_CATEGORY.get(class_key)
+    
     if not category:
-        # Default fallback if unknown class
-        category = "sofas"
+        # Check if base word matches (e.g. "sofa surface" -> "sofa")
+        for k in _CLASS_TO_CATEGORY.keys():
+            if k in class_key:
+                category = _CLASS_TO_CATEGORY[k]
+                break
+                
+    if not category:
+        # Return empty list instead of random "sofas"
+        return JSONResponse(content={
+            "status": "success",
+            "class_label": class_label,
+            "category": None,
+            "items": [],
+            "total": 0,
+        })
         
     products = _get_products()
     items = []

@@ -29,7 +29,7 @@ const DEFAULTS: PipelineConfig = {
     feather_sigma: 2.0,
     sdxl_steps: 20,
     sdxl_guidance: 5.0,
-    sdxl_denoise: 0.5,
+    sdxl_denoise: 0.85,   // Matches backend default for proper object replacement depth
     sdxl_scheduler: "euler",
     lora_scale: 0.7,
     controlnet_scale: 0.6,

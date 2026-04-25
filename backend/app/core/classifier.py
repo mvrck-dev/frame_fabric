@@ -61,26 +61,40 @@ class CLIPClassifier:
         # Crop the masked region for better classification
         cropped = self._crop_masked_region(image, mask)
         
-        # Prepare text prompts
-        text_prompts = [f"a photo of a {label}" for label in labels]
+        # Prepare text prompts (Ensemble)
+        templates = [
+            "a photo of a {label} in an interior room",
+            "the surface of a {label}",
+            "a {label} in a home",
+            "a close up photo of a {label}",
+            "a clean view of a {label}",
+        ]
         
-        # Run CLIP inference
+        all_probs = []
+        
+        # Run CLIP inference for each template and average results
         with torch.no_grad():
-            inputs = self.processor(
-                text=text_prompts,
-                images=cropped,
-                return_tensors="pt",
-                padding=True,
-            )
-            inputs = {k: v.to(self.device) for k, v in inputs.items()}
-            
-            outputs = self.model(**inputs)
-            logits = outputs.logits_per_image[0]  # (num_labels,)
-            probs = logits.softmax(dim=-1).cpu().numpy()
+            for template in templates:
+                text_prompts = [template.format(label=label) for label in labels]
+                inputs = self.processor(
+                    text=text_prompts,
+                    images=cropped,
+                    return_tensors="pt",
+                    padding=True,
+                )
+                inputs = {k: v.to(self.device) for k, v in inputs.items()}
+                
+                outputs = self.model(**inputs)
+                logits = outputs.logits_per_image[0]  # (num_labels,)
+                probs = logits.softmax(dim=-1).cpu().numpy()
+                all_probs.append(probs)
+        
+        # Average probabilities across templates
+        avg_probs = np.mean(all_probs, axis=0)
         
         # Build sorted results
         results = [
-            {"label": labels[i], "confidence": round(float(probs[i]), 4)}
+            {"label": labels[i], "confidence": round(float(avg_probs[i]), 4)}
             for i in range(len(labels))
         ]
         results.sort(key=lambda x: x["confidence"], reverse=True)
@@ -106,10 +120,17 @@ class CLIPClassifier:
         y1, y2 = np.where(rows)[0][[0, -1]]
         x1, x2 = np.where(cols)[0][[0, -1]]
         
-        # Add 10% padding for context
+        # Dynamic padding: scale context inversely with mask size
+        # Larger regions (ceilings/walls) get less padding to avoid distractors
         h, w = img_np.shape[:2]
-        pad_y = int((y2 - y1) * 0.1)
-        pad_x = int((x2 - x1) * 0.1)
+        mask_area_frac = mask.sum() / (h * w)
+        
+        # Scale padding from 5% (large regions) to 30% (small objects)
+        pad_scale = 0.30 - (min(0.25, mask_area_frac) * 1.0) 
+        pad_scale = max(0.05, pad_scale)
+        
+        pad_y = int((y2 - y1) * pad_scale)
+        pad_x = int((x2 - x1) * pad_scale)
         y1 = max(0, y1 - pad_y)
         y2 = min(h, y2 + pad_y + 1)
         x1 = max(0, x1 - pad_x)

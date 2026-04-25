@@ -14,6 +14,7 @@ from fastapi import APIRouter, File, UploadFile, Form, HTTPException
 from fastapi.responses import JSONResponse
 import io
 import base64
+import anyio
 import numpy as np
 from PIL import Image
 
@@ -193,6 +194,7 @@ async def generate_preview(
 @router.post("/export")
 async def export_design(
     product_image: UploadFile = File(...),
+    product_name: str = Form(""),
     category: str = Form(""),
     prompt: str = Form(""),
 ):
@@ -211,16 +213,44 @@ async def export_design(
         contents = await product_image.read()
         product_pil = Image.open(io.BytesIO(contents)).convert("RGB")
         
-        from app.core.sdxl_export import get_export_pipeline
+        from app.core.sdxl_export import get_export_pipeline, reset_cancel_event, get_cancel_event
         export_pipeline = get_export_pipeline()
         
-        result = export_pipeline.export(
-            scene_image=engine.current_image,
-            product_image=product_pil,
-            mask=engine.accumulated_mask,
-            category=category,
-            prompt=prompt,
-        )
+        # Build a strong prompt with whatever info is available
+        if not prompt:
+            parts = []
+            if product_name:
+                parts.append(product_name)
+            if category:
+                parts.append(category)
+            if parts:
+                item_desc = ", ".join(parts)
+                prompt = (
+                    f"photorealistic interior design photo, {item_desc} standing on the floor, "
+                    f"seamlessly integrated, realistic shadows, professional architectural lighting, "
+                    f"sharp focus, 8k"
+                )
+            else:
+                prompt = (
+                    "photorealistic interior design photo, furniture seamlessly integrated into "
+                    "the room, professional lighting, sharp focus, 8k"
+                )
+            
+        # Arm cancel event so the thread can be interrupted if client disconnects
+        reset_cancel_event()
+        cancel_event = get_cancel_event()
+
+        def _run_export():
+            return export_pipeline.export(
+                scene_image=engine.current_image,
+                product_image=product_pil,
+                mask=engine.accumulated_mask,
+                category=category,
+                prompt=prompt,
+                cancel_event=cancel_event,
+            )
+            
+        result = await anyio.to_thread.run_sync(_run_export)
         
         return JSONResponse(content={
             "status": "success",

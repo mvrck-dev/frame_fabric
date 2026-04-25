@@ -51,6 +51,8 @@ class SAMInferenceEngine:
         self.current_image_shape: tuple[int, int] | None = None
         self.current_image: Image.Image | None = None  # Keep reference for classifier
         self.accumulated_mask: np.ndarray | None = None  # (H, W) bool
+        self.click_points: list[list[int]] = []
+        self.click_labels: list[int] = []
     
     def set_image(self, image: Image.Image):
         """Processes and embeds the image into the SAM predictor."""
@@ -64,6 +66,8 @@ class SAMInferenceEngine:
         
         # Reset accumulated mask on new image
         self.accumulated_mask = np.zeros(self.current_image_shape, dtype=bool)
+        self.click_points = []
+        self.click_labels = []
         
         self.predictor.set_image(image_np)
         
@@ -83,7 +87,7 @@ class SAMInferenceEngine:
         masks, scores, logits = self.predictor.predict(
             point_coords=input_point,
             point_labels=input_label,
-            multimask_output=True,
+            multimask_output=False,
         )
         
         # Take the best scoring mask
@@ -106,24 +110,32 @@ class SAMInferenceEngine:
         Returns:
             The updated accumulated mask (H, W) bool
         """
-        new_mask = self.predict_mask(x, y)
-        config = get_config()
-        
-        # Apply dilation to the raw mask
-        new_mask = dilate_mask(new_mask, kernel_size=config.dilation_px)
-        
-        if mode == "add":
-            # Shift+click: union
-            self.accumulated_mask = self.accumulated_mask | new_mask
-            print(f"[SAM Engine] Mask ADDED (union). Total mask pixels: {self.accumulated_mask.sum()}")
-        elif mode == "subtract":
-            # Ctrl+click: subtraction
-            self.accumulated_mask = self.accumulated_mask & ~new_mask
-            print(f"[SAM Engine] Mask SUBTRACTED. Total mask pixels: {self.accumulated_mask.sum()}")
+        if self.current_image_shape is None:
+            raise ValueError("No image has been set.")
+            
+        if mode == "single":
+            self.click_points = [[x, y]]
+            self.click_labels = [1]
         else:
-            # Plain click: fresh single mask
-            self.accumulated_mask = new_mask
-            print(f"[SAM Engine] Mask REPLACED (single). Total mask pixels: {self.accumulated_mask.sum()}")
+            self.click_points.append([x, y])
+            self.click_labels.append(1 if mode == "add" else 0)
+            
+        input_point = np.array(self.click_points)
+        input_label = np.array(self.click_labels)
+        
+        print(f"[SAM Engine] Predicting with {len(self.click_points)} points...")
+        masks, scores, logits = self.predictor.predict(
+            point_coords=input_point,
+            point_labels=input_label,
+            multimask_output=True,
+        )
+        
+        # Take the best scoring mask
+        best_idx = np.argmax(scores)
+        best_mask = masks[best_idx]
+        
+        self.accumulated_mask = best_mask
+        print(f"[SAM Engine] Mask updated. Total mask pixels: {self.accumulated_mask.sum()}")
         
         return self.accumulated_mask
     
@@ -142,6 +154,8 @@ class SAMInferenceEngine:
         """Reset accumulated mask to empty."""
         if self.current_image_shape is not None:
             self.accumulated_mask = np.zeros(self.current_image_shape, dtype=bool)
+        self.click_points = []
+        self.click_labels = []
         print("[SAM Engine] Masks cleared.")
 
 

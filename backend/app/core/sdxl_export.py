@@ -2,15 +2,16 @@
 SDXL Inpainting pipeline for high-quality export.
 
 Integrates:
-- Stable Diffusion XL Inpainting (fp16, CPU offload, VAE slicing)
+- Stable Diffusion XL Inpainting (fp16)
 - ControlNet (depth) for geometric locking
 - IP-Adapter for exact product visual conditioning
 - Category LoRA for consistency
-- Post-processing: edge-aware compositing, color transfer, Poisson blending, ESRGAN
+- Post-processing: color transfer → feathered composite → Poisson seamless clone
 """
 import os
 import time
 import gc
+import threading
 import torch
 import numpy as np
 from PIL import Image
@@ -23,6 +24,9 @@ from app.core.postprocess import (
     poisson_blend,
     histogram_match,
 )
+
+# Module-level cancel event so the HTTP layer can signal the inference thread
+_cancel_event = threading.Event()
 
 
 class SDXLExportPipeline:
@@ -45,6 +49,7 @@ class SDXLExportPipeline:
             os.path.dirname(os.path.abspath(__file__)),
             "../../../models"
         )
+        self._lock = threading.Lock()  # Prevent concurrent pipeline loads
     
     def _ensure_loaded(self):
         """Lazy-load the full SDXL pipeline on first export."""
@@ -106,14 +111,14 @@ class SDXLExportPipeline:
                     **pipe_kwargs,
                 )
             
-            # Memory optimizations for 8GB VRAM
-            self.pipe.enable_model_cpu_offload() # Better memory/speed tradeoff than sequential offload
-            self.pipe.enable_vae_slicing()
+            # RTX 5070 has 12 GB+ VRAM — do NOT use CPU offload, it cripples speed.
+            # Move everything to GPU directly and use VAE tiling instead of slicing.
+            self.pipe.to(self.device)
             try:
-                self.pipe.enable_vae_tiling()
+                self.pipe.vae.enable_tiling()  # Handles large images without OOM
             except Exception:
                 pass
-            
+
             # Try xformers for memory-efficient attention
             try:
                 self.pipe.enable_xformers_memory_efficient_attention()
@@ -134,9 +139,12 @@ class SDXLExportPipeline:
                     subfolder="sdxl_models",
                     weight_name="ip-adapter_sdxl.bin",
                 )
-                print("[SDXL Export] IP-Adapter loaded successfully")
+                # Manually move the image_encoder to GPU to prevent "meta device" errors
+                if hasattr(self.pipe, "image_encoder") and self.pipe.image_encoder is not None:
+                    self.pipe.image_encoder.to(self.device, dtype=torch.float16)
+                print("[SDXL Export] IP-Adapter loaded and synced to GPU")
             except Exception as e:
-                print(f"[SDXL Export] IP-Adapter load failed, proceeding without: {e}")
+                print(f"[SDXL Export] IP-Adapter load failed (continuing without): {e}")
             
             print(f"[SDXL Export] Pipeline ready in {time.time() - start:.2f}s")
             
@@ -159,6 +167,12 @@ class SDXLExportPipeline:
         
         try:
             config = get_config()
+            # Clear previous LoRAs
+            try:
+                self.pipe.unload_lora_weights()
+            except Exception:
+                pass
+                
             self.pipe.load_lora_weights(lora_path)
             self.pipe.fuse_lora(lora_scale=config.lora_scale)
             print(f"[SDXL Export] LoRA loaded for '{category}' (scale={config.lora_scale})")
@@ -166,6 +180,48 @@ class SDXLExportPipeline:
         except Exception as e:
             print(f"[SDXL Export] Failed to load LoRA: {e}")
             return False
+            
+    def generate_t2i(self, prompt: str, negative_prompt: str = "", steps: int = 25, seed: int = 42) -> Image.Image:
+        """Generate a Text-to-Image result using the inpaint pipeline (simulated)."""
+        self._ensure_loaded()
+        
+        # Inpainting as T2I: black image + full white mask
+        dummy_image = Image.new("RGB", (1024, 1024), (128, 128, 128))
+        dummy_mask = Image.new("L", (1024, 1024), 255)
+        
+        gen_kwargs = {
+            "prompt": prompt,
+            "negative_prompt": negative_prompt,
+            "image": dummy_image,
+            "mask_image": dummy_mask,
+            "num_inference_steps": steps,
+            "guidance_scale": 7.5,
+            "strength": 1.0,
+            "generator": torch.Generator(device="cpu").manual_seed(seed),
+        }
+        
+        # Add dummy control image if ControlNet is active
+        if self.controlnet is not None:
+            gen_kwargs["control_image"] = dummy_image.convert("L")
+            gen_kwargs["controlnet_conditioning_scale"] = 0.0 # Disable its effect
+        
+        # IP-Adapter requires an image in gen_kwargs if loaded, even at 0.0 scale
+        try:
+            self.pipe.set_ip_adapter_scale(0.0)
+            gen_kwargs["ip_adapter_image"] = dummy_image.resize((512, 512))
+        except Exception:
+            pass
+            
+        print(f"[SDXL Export] Generating T2I swatch: {prompt[:50]}...")
+        result = self.pipe(**gen_kwargs).images[0]
+        
+        # Reset IPAdapter scale
+        try:
+            self.pipe.set_ip_adapter_scale(0.6)
+        except Exception:
+            pass
+            
+        return result
     
     def _estimate_depth(self, image: Image.Image) -> Image.Image:
         """Generate depth map using MiDaS for ControlNet conditioning."""
@@ -175,9 +231,9 @@ class SDXLExportPipeline:
             if self.depth_estimator is None:
                 print("[SDXL Export] Loading MiDaS depth estimator...")
                 self.depth_estimator = {
-                    "processor": DPTImageProcessor.from_pretrained("Intel/dpt-small"),
+                    "processor": DPTImageProcessor.from_pretrained("Intel/dpt-hybrid-midas"),
                     "model": DPTForDepthEstimation.from_pretrained(
-                        "Intel/dpt-small", torch_dtype=torch.float16
+                        "Intel/dpt-hybrid-midas", torch_dtype=torch.float16
                     ),
                 }
             
@@ -196,10 +252,6 @@ class SDXLExportPipeline:
             depth = (depth * 255).astype(np.uint8)
             depth_image = Image.fromarray(depth).resize(image.size)
             
-            # Move model back to CPU to free VRAM
-            model.to("cpu")
-            torch.cuda.empty_cache()
-            
             return depth_image
             
         except Exception as e:
@@ -213,101 +265,203 @@ class SDXLExportPipeline:
         mask: np.ndarray,
         category: str = "",
         prompt: str = "",
+        cancel_event: threading.Event | None = None,
+        fabric_mode: bool = False,
     ) -> Image.Image:
         """
         Run the full SDXL inpainting export pipeline.
+        
+        fabric_mode=True: skips color transfer and Poisson blend so new
+        fabric colours/textures are preserved rather than mapped back to
+        the original scene palette.
         """
+        with self._lock:
+            return self._export_inner(
+                scene_image, product_image, mask,
+                category, prompt, cancel_event, fabric_mode
+            )
+    
+    def _export_inner(
+        self,
+        scene_image: Image.Image,
+        product_image: Image.Image,
+        mask: np.ndarray,
+        category: str = "",
+        prompt: str = "",
+        cancel_event: threading.Event | None = None,
+        fabric_mode: bool = False,
+    ) -> Image.Image:
+        def _check_cancel():
+            if cancel_event and cancel_event.is_set():
+                raise RuntimeError("Generation cancelled by client")
+        
+        _check_cancel()
         self._ensure_loaded()
         if self.pipe is None:
             raise RuntimeError("SDXL pipeline not loaded")
         
         config = get_config()
         print(f"[SDXL Export] Starting export (steps={config.sdxl_steps}, "
-              f"guidance={config.sdxl_guidance}, denoise={config.sdxl_denoise})...")
+              f"guidance={config.sdxl_guidance}, denoise={config.sdxl_denoise}, "
+              f"fabric_mode={fabric_mode})...")
         start = time.time()
         
+        # Validate mask — log its coverage so we can catch empty/tiny masks
+        mask = mask.astype(bool)
+        mask_coverage = mask.sum() / mask.size
+        print(f"[SDXL Export] Mask coverage: {mask.sum()} px ({mask_coverage:.2%} of image)")
+        if not mask.any():
+            raise ValueError("Empty mask — nothing to inpaint")
+        
         # Try loading category LoRA
+        _check_cancel()
         if category:
             self._load_lora(category)
         
+        # Resize scene to a clean multiple of 8 for SDXL (required by VAE)
+        orig_size = scene_image.size  # (W, H)
+        target_w = (orig_size[0] // 8) * 8
+        target_h = (orig_size[1] // 8) * 8
+        if (target_w, target_h) != orig_size:
+            scene_image = scene_image.resize((target_w, target_h), Image.Resampling.LANCZOS)
+            # Resize mask to match
+            mask_resized = Image.fromarray((mask.astype(np.uint8) * 255))
+            mask_resized = mask_resized.resize((target_w, target_h), Image.Resampling.NEAREST)
+            mask = np.array(mask_resized) > 127
+        
         # Prepare mask image (PIL, white = inpaint area)
-        mask_pil = Image.fromarray((mask.astype(np.uint8) * 255))
-        mask_pil = mask_pil.resize(scene_image.size)
+        # Dilate mask slightly to avoid hard boundary artifacts at edges
+        from app.core.postprocess import dilate_mask
+        mask_dilated = dilate_mask(mask, kernel_size=3)
+        mask_pil = Image.fromarray((mask_dilated.astype(np.uint8) * 255))
+        
+        _check_cancel()
         
         # Generate depth map for ControlNet
         depth_image = self._estimate_depth(scene_image)
+        # Zero out depth inside the mask so ControlNet doesn't constrain the generation
+        depth_np = np.array(depth_image)
+        if depth_np.ndim == 2:
+            depth_np[mask_dilated] = 0
+        depth_image = Image.fromarray(depth_np)
         
-        # Build prompt if not provided
+        # Build prompt if not provided — be very specific to prevent hallucination
         if not prompt:
-            prompt = f"interior design photo, {category} replacement, photorealistic, professional lighting, high quality"
-        negative_prompt = "blurry, distorted, artifacts, low quality, cartoon, painting"
+            cat_str = category if category else "furniture"
+            prompt = (
+                f"photorealistic interior design photo, a {cat_str} seamlessly "
+                f"integrated into the room, matching existing lighting and perspective, "
+                f"professional architectural photography, 8k, sharp focus"
+            )
+        negative_prompt = (
+            "blurry, distorted, artifacts, low quality, cartoon, painting, "
+            "floating, detached, wrong perspective, extra limbs, duplicate, "
+            "ugly, bad anatomy, watermark, text, signature"
+        )
         
-        # Set IP-Adapter image if available
+        _check_cancel()
+        
+        # Set IP-Adapter — higher scale in fabric mode since the swatch IS the reference
+        ip_adapter_image = None
+        ip_scale = 0.75 if fabric_mode else 0.5
         try:
-            self.pipe.set_ip_adapter_scale(0.6)
+            self.pipe.set_ip_adapter_scale(ip_scale)
             ip_adapter_image = product_image.resize((512, 512))
-        except Exception:
-            ip_adapter_image = None
+            print(f"[SDXL Export] IP-Adapter scale set to {ip_scale}")
+        except Exception as e:
+            print(f"[SDXL Export] IP-Adapter not available: {e}")
         
-        # Run SDXL inpainting with full latent regeneration (no fake sticker overlay)
+        # In fabric mode use full strength so the mask region is completely regenerated
+        denoise_strength = 1.0 if fabric_mode else config.sdxl_denoise
+        
+        # Build generation kwargs
         gen_kwargs = {
             "prompt": prompt,
             "negative_prompt": negative_prompt,
-            "image": scene_image,        # Provide the raw scene
-            "mask_image": mask_pil,      # Only the masked area will be regenerated
+            "image": scene_image,
+            "mask_image": mask_pil,
             "num_inference_steps": config.sdxl_steps,
             "guidance_scale": config.sdxl_guidance,
-            "strength": config.sdxl_denoise, # Standard deep denoise (1.0 or high) for complete generation
-            "generator": torch.Generator(device="cpu").manual_seed(42),
+            "strength": denoise_strength,
+            "generator": torch.Generator(device=self.device).manual_seed(42),
         }
+        print(f"[SDXL Export] denoise_strength={denoise_strength}, steps={config.sdxl_steps}")
         
-        # Add IP-Adapter image if loaded
         if ip_adapter_image is not None:
             gen_kwargs["ip_adapter_image"] = ip_adapter_image
         
-        # Add ControlNet image if available  
         if self.controlnet is not None:
             gen_kwargs["control_image"] = depth_image
             gen_kwargs["controlnet_conditioning_scale"] = config.controlnet_scale
         
-        print("[SDXL Export] Executing generation. Please monitor memory...")
+        print("[SDXL Export] Executing generation...")
+        _check_cancel()
         result = self.pipe(**gen_kwargs).images[0]
         
         # ── Post-Processing ──
+        # SDXL inpainting returns the FULL composited scene (not just the patch).
+        # We composite again with a feathered mask to get soft edges, then
+        # optionally apply colour correction and Poisson blending.
         result_np = cv2.cvtColor(np.array(result), cv2.COLOR_RGB2BGR)
-        scene_np = cv2.cvtColor(np.array(scene_image), cv2.COLOR_RGB2BGR)
+        scene_np  = cv2.cvtColor(np.array(scene_image), cv2.COLOR_RGB2BGR)
         
-        # Color transfer to match scene illumination
-        if config.color_transfer:
-            print("[SDXL Export] Applying color transfer...")
-            result_np = color_transfer_reinhard(result_np, scene_np, mask)
+        print(f"[SDXL Export] result shape={result_np.shape}, scene shape={scene_np.shape}, "
+              f"mask shape={mask.shape}, mask sum={mask.sum()}")
         
-        # Poisson blending for lighting continuity
-        if config.poisson_blend:
-            print("[SDXL Export] Applying Poisson blending...")
-            result_np = poisson_blend(result_np, scene_np, mask)
-        
-        # Edge-aware compositing with feathered mask
+        # 1. Feathered alpha composite — primary compositing step.
+        #    Use the ORIGINAL (non-dilated) mask so we don't over-extend into scene.
         feathered = feather_mask(mask, sigma=config.feather_sigma)
-        alpha = np.stack([feathered] * 3, axis=-1)
-        final_np = (result_np.astype(np.float32) * alpha + 
-                    scene_np.astype(np.float32) * (1 - alpha))
-        final_np = final_np.astype(np.uint8)
+        alpha     = np.stack([feathered] * 3, axis=-1)
         
-        # Optional ESRGAN super-resolution on edited patch
+        # Extract only the inpainted patch from the SDXL result and blend it in.
+        # We deliberately do NOT use result_np outside the mask — SDXL already
+        # filled the rest with the scene; blending again could double-shift colours.
+        composited_np = scene_np.copy()
+        composited_np = (
+            result_np.astype(np.float32) * alpha +
+            scene_np.astype(np.float32)  * (1.0 - alpha)
+        ).astype(np.uint8)
+        
+        if fabric_mode:
+            # ── Fabric overlay: preserve new texture colours ──
+            # No colour transfer (it maps new fabric back to original palette).
+            # Light edge feather only — no Poisson (MIXED_CLONE restores original texture).
+            print("[SDXL Export] Fabric mode: skipping colour transfer and Poisson blend")
+            final_np = composited_np
+        else:
+            # ── Furniture replacement: match scene illumination ──
+            # 2a. Colour transfer on MASKED region only — leaves rest of scene untouched.
+            if config.color_transfer:
+                print("[SDXL Export] Applying colour transfer to masked region...")
+                # Extract masked patch, transfer, paste back
+                result_patch = result_np.copy()
+                transferred  = color_transfer_reinhard(result_np, scene_np, mask)
+                # Only replace pixels inside the mask
+                result_patch[mask] = transferred[mask]
+                # Re-composite with the corrected patch
+                composited_np = (
+                    result_patch.astype(np.float32) * alpha +
+                    scene_np.astype(np.float32)      * (1.0 - alpha)
+                ).astype(np.uint8)
+            
+            # 2b. Poisson blending for lighting continuity at seam edges
+            if config.poisson_blend:
+                print("[SDXL Export] Applying Poisson blending...")
+                composited_np = poisson_blend(composited_np, scene_np, mask)
+            
+            final_np = composited_np
+        
         if config.esrgan_enabled:
             final_np = self._apply_esrgan(final_np, mask)
         
         final_rgb = cv2.cvtColor(final_np, cv2.COLOR_BGR2RGB)
         
-        # Cleanup VRAM
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
         
         elapsed = time.time() - start
         print(f"[SDXL Export] Export completed in {elapsed:.1f}s")
-        
         return Image.fromarray(final_rgb)
     
     def _apply_esrgan(self, image_bgr: np.ndarray, mask: np.ndarray) -> np.ndarray:
@@ -363,3 +517,19 @@ def get_export_pipeline() -> SDXLExportPipeline:
     if _export_pipeline is None:
         _export_pipeline = SDXLExportPipeline()
     return _export_pipeline
+
+
+def get_cancel_event() -> threading.Event:
+    """Return the module-level cancel event for the current inference job."""
+    return _cancel_event
+
+
+def reset_cancel_event() -> None:
+    """Clear the cancel event before starting a new inference job."""
+    _cancel_event.clear()
+
+
+def signal_cancel() -> None:
+    """Signal the running inference thread to abort as soon as possible."""
+    _cancel_event.set()
+    print("[SDXL Export] Cancellation signalled.")

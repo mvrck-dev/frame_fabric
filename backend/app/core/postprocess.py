@@ -121,6 +121,12 @@ def poisson_blend(source: np.ndarray, target: np.ndarray,
         mask_uint8 = cv2.resize(mask_uint8, (target.shape[1], target.shape[0]))
     
     try:
+        # Guard: seamlessClone requires the center to be within the source image bounds
+        h_src, w_src = source.shape[:2]
+        cx = max(1, min(cx, w_src - 2))
+        cy = max(1, min(cy, h_src - 2))
+        center = (cx, cy)
+        
         result = cv2.seamlessClone(
             source, target, mask_uint8, center, cv2.MIXED_CLONE
         )
@@ -132,6 +138,29 @@ def poisson_blend(source: np.ndarray, target: np.ndarray,
         blended = (source.astype(np.float32) * alpha_3ch + 
                     target.astype(np.float32) * (1 - alpha_3ch))
         return blended.astype(np.uint8)
+
+
+def blend_luminance(source: np.ndarray, target: np.ndarray, mask: np.ndarray,
+                    strength: float = 0.3) -> np.ndarray:
+    """
+    Blends the luminance (L channel) from the target (original scene) 
+    into the source (generated image) within the masked region.
+    
+    Uses a weighted blend rather than a hard swap to preserve generated shading.
+    strength=0.0 keeps generated luminance entirely; strength=1.0 replaces it fully.
+    Default 0.3 preserves 70% of SDXL-generated lighting with 30% scene correction.
+    """
+    source_lab = cv2.cvtColor(source, cv2.COLOR_BGR2LAB).astype(np.float32)
+    target_lab = cv2.cvtColor(target, cv2.COLOR_BGR2LAB).astype(np.float32)
+    
+    mask_bool = mask.astype(bool)
+    # Weighted blend: keep most of the generated luminance
+    source_lab[mask_bool, 0] = (
+        source_lab[mask_bool, 0] * (1.0 - strength)
+        + target_lab[mask_bool, 0] * strength
+    )
+    
+    return cv2.cvtColor(np.clip(source_lab, 0, 255).astype(np.uint8), cv2.COLOR_LAB2BGR)
 
 
 def histogram_match(source: np.ndarray, reference: np.ndarray,

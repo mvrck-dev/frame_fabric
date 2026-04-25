@@ -199,16 +199,38 @@ export default function InventorySidebar({
             </div>
 
             {/* Inventory grid */}
-            <div className="flex-1 overflow-y-auto p-3">
+            {activeClassLabel && (
+                activeClassLabel.toLowerCase().includes("wall") || 
+                activeClassLabel.toLowerCase().includes("ceiling") || 
+                activeClassLabel.toLowerCase().includes("floor")
+            ) ? (
+                <div className="flex-1 overflow-y-auto p-4 flex flex-col items-center justify-center text-center text-muted-foreground/50">
+                    <div className="w-16 h-16 rounded-full border-2 border-dashed border-red-500/30 flex items-center justify-center mb-4 text-red-500/50 hover:bg-red-500/5 transition-colors">
+                        <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                        </svg>
+                    </div>
+                    <p className="text-sm font-medium text-foreground mb-2">Structural Element Detected</p>
+                    <p className="text-xs px-2">
+                        {activeClassLabel.charAt(0).toUpperCase() + activeClassLabel.slice(1)}s cannot be replaced with standalone furniture. Please select a different object.
+                    </p>
+                </div>
+            ) : (
+                <div className="flex-1 overflow-y-auto p-3">
                 {isLoading ? (
                     <div className="flex flex-col items-center justify-center py-12 text-muted-foreground">
                         <Loader2 className="w-8 h-8 animate-spin text-purple-400 mb-3" />
                         <span className="text-xs">Loading inventory...</span>
                     </div>
                 ) : items.length === 0 ? (
-                    <div className="flex flex-col items-center justify-center py-12 text-muted-foreground/50">
-                        <p className="text-sm text-center px-4 mb-4">
-                            No items found for &ldquo;{category}&rdquo;. Upload a custom product image below.
+                    <div className="flex-1 p-4 flex flex-col items-center justify-center text-center text-muted-foreground">
+                        <div className="w-12 h-12 rounded-full bg-white/5 flex items-center justify-center mb-4">
+                            <Tag className="w-5 h-5 opacity-20" />
+                        </div>
+                        <p className="text-sm font-medium text-foreground mb-2">No Matches Found</p>
+                        <p className="text-xs px-4">
+                            We don&apos;t have any furniture categories that match &ldquo;{activeClassLabel}&rdquo; yet. 
+                            Try uploading a custom product image below.
                         </p>
                     </div>
                 ) : (
@@ -250,24 +272,31 @@ export default function InventorySidebar({
                     </div>
                 )}
             </div>
+            )}
 
             {/* Custom upload button */}
-            <div className="p-3 border-t border-border/50">
-                <button
-                    onClick={() => customUploadRef.current?.click()}
-                    className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl border border-dashed border-white/15 text-sm font-medium text-muted-foreground hover:text-foreground hover:border-purple-500/40 hover:bg-purple-500/5 transition-all"
-                >
-                    <Upload className="w-4 h-4" />
-                    Upload Custom Product
-                </button>
-                <input
-                    type="file"
-                    className="hidden"
-                    ref={customUploadRef}
-                    accept="image/jpeg, image/png, image/webp"
-                    onChange={handleCustomUpload}
-                />
-            </div>
+            {!(activeClassLabel && (
+                activeClassLabel.toLowerCase().includes("wall") || 
+                activeClassLabel.toLowerCase().includes("ceiling") || 
+                activeClassLabel.toLowerCase().includes("floor")
+            )) && (
+                <div className="p-3 border-t border-border/50">
+                    <button
+                        onClick={() => customUploadRef.current?.click()}
+                        className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl border border-dashed border-white/15 text-sm font-medium text-muted-foreground hover:text-foreground hover:border-purple-500/40 hover:bg-purple-500/5 transition-all"
+                    >
+                        <Upload className="w-4 h-4" />
+                        Upload Custom Product
+                    </button>
+                    <input
+                        type="file"
+                        className="hidden"
+                        ref={customUploadRef}
+                        accept="image/jpeg, image/png, image/webp"
+                        onChange={handleCustomUpload}
+                    />
+                </div>
+            )}
 
             {/* Preview indicator */}
             {isGeneratingPreview && (
