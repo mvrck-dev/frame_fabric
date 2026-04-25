@@ -1,0 +1,72 @@
+{
+  "pillows": [
+    {
+      "name": "Velvet Purple",
+      "filename": "velvet_purple.png",
+      "thumbnail_url": "/inventory/pillows/velvet_purple.png",
+      "full_url": "/inventory/pillows/velvet_purple.png"
+    },
+    {
+      "name": "Cotton White",
+      "filename": "cotton_white.png",
+      "thumbnail_url": "/inventory/pillows/cotton_white.png",
+      "full_url": "/inventory/pillows/cotton_white.png"
+    },
+    {
+      "name": "Geometric Blue",
+      "filename": "geometric_blue.png",
+      "thumbnail_url": "/inventory/pillows/geometric_blue.png",
+      "full_url": "/inventory/pillows/geometric_blue.png"
+    }
+  ],
+  "curtains": [
+    {
+      "name": "Sheer Linen",
+      "filename": "sheer_linen.png",
+      "thumbnail_url": "/inventory/curtains/sheer_linen.png",
+      "full_url": "/inventory/curtains/sheer_linen.png"
+    },
+    {
+      "name": "Velvet Emerald",
+      "filename": "velvet_emerald.png",
+      "thumbnail_url": "/inventory/curtains/velvet_emerald.png",
+      "full_url": "/inventory/curtains/velvet_emerald.png"
+    }
+  ],
+  "towels": [
+    {
+      "name": "Spa White",
+      "filename": "spa_white.png",
+      "thumbnail_url": "/inventory/towels/spa_white.png",
+      "full_url": "/inventory/towels/spa_white.png"
+    },
+    {
+      "name": "Navy Striped",
+      "filename": "navy_striped.png",
+      "thumbnail_url": "/inventory/towels/navy_striped.png",
+      "full_url": "/inventory/towels/navy_striped.png"
+    }
+  ],
+  "rugs": [
+    {
+      "name": "Persian Red",
+      "filename": "persian_red.png",
+      "thumbnail_url": "/inventory/rugs/persian_red.png",
+      "full_url": "/inventory/rugs/persian_red.png"
+    },
+    {
+      "name": "Modern Gray",
+      "filename": "modern_gray.png",
+      "thumbnail_url": "/inventory/rugs/modern_gray.png",
+      "full_url": "/inventory/rugs/modern_gray.png"
+    }
+  ],
+  "blankets": [
+    {
+      "name": "Knit Cream",
+      "filename": "knit_cream.png",
+      "thumbnail_url": "/inventory/blankets/knit_cream.png",
+      "full_url": "/inventory/blankets/knit_cream.png"
+    }
+  ]
+}
