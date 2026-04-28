@@ -102,7 +102,7 @@ export default function InventorySidebar({
     // ── Empty state: no image loaded yet ──
     if (!imageLoaded) {
         return (
-            <aside className="w-80 border-r border-border/50 bg-card/30 flex flex-col shrink-0">
+            <div className="flex-1 flex flex-col min-h-0">
                 <div className="p-4 border-b border-border/50">
                     <h2 className="font-semibold text-sm">Material Library</h2>
                     <p className="text-xs text-muted-foreground mt-1">
@@ -117,14 +117,14 @@ export default function InventorySidebar({
                         Upload an image and tap on a surface to view available materials.
                     </p>
                 </div>
-            </aside>
+            </div>
         );
     }
 
     // ── Waiting for first click ──
     if (!classLabel && !activeClassLabel) {
         return (
-            <aside className="w-80 border-r border-border/50 bg-card/30 flex flex-col shrink-0">
+            <div className="flex-1 flex flex-col min-h-0">
                 <div className="p-4 border-b border-border/50">
                     <h2 className="font-semibold text-sm">Material Library</h2>
                     <p className="text-xs text-muted-foreground mt-1">
@@ -139,13 +139,13 @@ export default function InventorySidebar({
                         Tap any object in the scene to detect its type and browse matching materials.
                     </p>
                 </div>
-            </aside>
+            </div>
         );
     }
 
     // ── Active state: show inventory ──
     return (
-        <aside className="w-80 border-r border-border/50 bg-card/30 flex flex-col shrink-0">
+        <div className="flex-1 flex flex-col min-h-0">
             {/* Header with class label */}
             <div className="p-4 border-b border-border/50">
                 <div className="flex items-center justify-between mb-2">
@@ -300,11 +300,11 @@ export default function InventorySidebar({
 
             {/* Preview indicator */}
             {isGeneratingPreview && (
-                <div className="p-3 border-t border-border/50 flex items-center gap-2 text-xs text-purple-400">
+                <div className="flex items-center gap-2 text-xs text-purple-400 p-3 border-t border-border/50">
                     <Loader2 className="w-3 h-3 animate-spin" />
                     Generating preview...
                 </div>
             )}
-        </aside>
+        </div>
     );
 }

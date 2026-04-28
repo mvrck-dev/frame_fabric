@@ -35,7 +35,7 @@ class FastPreviewPipeline:
                 torch_dtype=torch.float16,
                 variant="fp16",
                 use_safetensors=True
-            ).to(self.device)
+            )
             
             # Use Euler for fast standard diffusion steps
             self.pipe.scheduler = EulerDiscreteScheduler.from_config(self.pipe.scheduler.config)

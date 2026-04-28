@@ -52,7 +52,7 @@ export default function FabricSidebar({
 
     if (!imageLoaded) {
         return (
-            <aside className="w-80 border-r border-border/50 bg-card/30 flex flex-col shrink-0">
+            <div className="flex-1 flex flex-col min-h-0">
                 <div className="p-4 border-b border-border/50">
                     <h2 className="font-semibold text-sm">Fabric Generator</h2>
                     <p className="text-xs text-muted-foreground mt-1">
@@ -63,12 +63,12 @@ export default function FabricSidebar({
                     <Sparkles className="w-8 h-8 mb-4 opacity-20" />
                     <p className="text-sm">Upload an image and select a piece of furniture to change its fabric.</p>
                 </div>
-            </aside>
+            </div>
         );
     }
 
     return (
-        <aside className="w-80 border-r border-border/50 bg-card/30 flex flex-col shrink-0">
+        <div className="flex-1 flex flex-col min-h-0">
             <div className="p-4 border-b border-border/50">
                 <h2 className="font-semibold text-sm mb-4">Fabric Generator</h2>
                 <div className="space-y-3">
@@ -145,6 +145,6 @@ export default function FabricSidebar({
                     LoRA Texture Synthesis
                 </p>
             </div>
-        </aside>
+        </div>
     );
 }

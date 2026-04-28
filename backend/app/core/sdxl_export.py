@@ -111,11 +111,11 @@ class SDXLExportPipeline:
                     **pipe_kwargs,
                 )
             
-            # RTX 5070 has 12 GB+ VRAM — do NOT use CPU offload, it cripples speed.
-            # Move everything to GPU directly and use VAE tiling instead of slicing.
-            self.pipe.to(self.device)
+            # The hardware has 8 GB VRAM. Enabling CPU offload is MANDATORY to prevent OOM.
+            self.pipe.enable_model_cpu_offload()
             try:
                 self.pipe.vae.enable_tiling()  # Handles large images without OOM
+                self.pipe.vae.enable_slicing()
             except Exception:
                 pass
 
@@ -245,6 +245,11 @@ class SDXLExportPipeline:
             with torch.no_grad():
                 outputs = model(**inputs)
                 predicted_depth = outputs.predicted_depth
+                
+            # Offload MiDaS depth estimator to CPU to free up VRAM for SDXL
+            model.to("cpu")
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
             
             # Normalize to 0–1 range
             depth = predicted_depth.squeeze().cpu().numpy()
@@ -296,6 +301,30 @@ class SDXLExportPipeline:
                 raise RuntimeError("Generation cancelled by client")
         
         _check_cancel()
+        
+        # Offload heavy persistent models (SAM, CLIP) to CPU to maximize VRAM for SDXL
+        from app.core.cv_pipeline import get_sam_engine
+        from app.core.classifier import get_classifier
+        
+        try:
+            sam_engine = get_sam_engine()
+            if hasattr(sam_engine, "sam") and sam_engine.sam is not None:
+                sam_engine.sam.to("cpu")
+                print("[SDXL Export] SAM Engine offloaded to CPU")
+        except Exception as e:
+            print(f"[SDXL Export] Failed to offload SAM: {e}")
+            
+        try:
+            classifier = get_classifier()
+            if hasattr(classifier, "model") and classifier.model is not None:
+                classifier.model.to("cpu")
+                print("[SDXL Export] CLIP Classifier offloaded to CPU")
+        except Exception as e:
+            print(f"[SDXL Export] Failed to offload CLIP: {e}")
+            
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            
         self._ensure_loaded()
         if self.pipe is None:
             raise RuntimeError("SDXL pipeline not loaded")
@@ -456,6 +485,14 @@ class SDXLExportPipeline:
         
         final_rgb = cv2.cvtColor(final_np, cv2.COLOR_BGR2RGB)
         
+        # Reload SAM Engine back to GPU for interactive responsiveness
+        try:
+            if hasattr(sam_engine, "sam") and sam_engine.sam is not None:
+                sam_engine.sam.to(sam_engine.device)
+                print("[SDXL Export] SAM Engine reloaded to GPU")
+        except Exception as e:
+            print(f"[SDXL Export] Failed to reload SAM to GPU: {e}")
+            
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
